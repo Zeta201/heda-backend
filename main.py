@@ -62,10 +62,7 @@ def protect_main_branch(repo_name: str):
     }
 
     payload = {
-        "required_pull_request_reviews": {
-            "dismiss_stale_reviews": True,
-            "required_approving_review_count": 1
-        },
+        "required_pull_request_reviews": None,
 
         "required_status_checks": {
             "strict": True,
