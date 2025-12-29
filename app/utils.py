@@ -15,7 +15,6 @@ def compute_experiment_hash(files: List[Path]) -> str:
     return h.hexdigest()
 
 
-
 def run_git(cmd: List[str], cwd: Path):
     subprocess.run(cmd, cwd=cwd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
