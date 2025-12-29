@@ -1,13 +1,18 @@
 from datetime import datetime
+import json
 from typing import List
 from fastapi import FastAPI, File, Form, HTTPException, Header, UploadFile
 from pydantic import BaseModel
-from github import Github, GithubException
+from auth0_jwks import get_current_user, verify_token
+from constants import InvitationStatus
 from pathlib import Path
 import tempfile
 import shutil
-import subprocess
 import os
+from typing import Dict
+from templates.pr_verify import pr_verify_template
+from templates.pr_finalize import pr_finalize_template
+from templates.pr_template import pr_title_template, pr_doc_template
 
 from dotenv import load_dotenv
 import requests
@@ -19,12 +24,11 @@ load_dotenv()
 # CONFIGURATION
 # -----------------------------
 
-GITHUB_ORG = "heda-gitops"  # Your GitOps org
+GITHUB_ORG = os.environ.get("GITHUB_ORG") 
 ADMIN_GITHUB_TOKEN = os.environ.get("GITHUB_ADMIN_TOKEN")  # Admin token
-BACKEND_AUTH_TOKEN = os.environ.get("HEDA_BACKEND_TOKEN")   # Simple auth token
 
-if not ADMIN_GITHUB_TOKEN or not BACKEND_AUTH_TOKEN:
-    raise RuntimeError("Missing environment variables: GITHUB_ADMIN_TOKEN or HEDA_BACKEND_TOKEN")
+if not ADMIN_GITHUB_TOKEN:
+    raise RuntimeError("Missing environment variables: GITHUB_ADMIN_TOKEN")
 
 gh = Github(ADMIN_GITHUB_TOKEN)
 org = gh.get_organization(GITHUB_ORG)
@@ -34,7 +38,6 @@ org = gh.get_organization(GITHUB_ORG)
 # -----------------------------
 
 class InitRequest(BaseModel):
-    username: str
     experiment_name: str
 
 class InitResponse(BaseModel):
@@ -46,8 +49,38 @@ class PublishResponse(BaseModel):
     pr_url: str
     message: str
 
+class OnboardRequest(BaseModel):
+    github_username: str
+    
+class OnboardStatusResponse(BaseModel):
+    onboarded: bool
+    invitation: str
+
 
 app = FastAPI(title="HEDA GitOps Backend")
+
+ONBOARDING_DB = Path("data/onboarding.json")
+ONBOARDING_DB.parent.mkdir(exist_ok=True)
+
+from fastapi import Depends
+
+
+def load_onboarding() -> Dict[str, dict]:
+    if ONBOARDING_DB.exists():
+        return json.loads(ONBOARDING_DB.read_text())
+    return {}
+
+def save_onboarding(data: Dict[str, dict]):
+    ONBOARDING_DB.write_text(json.dumps(data, indent=2))
+
+def is_org_member_by_username(github_username: str) -> bool:
+    for member in org.get_members():
+        try:
+            if member.login and member.login == github_username:
+                return True
+        except GithubException:
+            pass
+    return False
 
 
 def protect_main_branch(repo_name: str):
@@ -85,17 +118,17 @@ def protect_main_branch(repo_name: str):
             f"Failed to protect main branch: {response.status_code} {response.text}"
         )
 
-def create_gitops_repo(username: str, experiment_name: str) -> str:
+def create_gitops_repo(github_username: str, experiment_name: str) -> str:
     """
     Create an empty GitOps repository for experiment proposals.
     """
-    repo_name = f"{username}-{experiment_name}"
+    repo_name = f"{github_username}-{experiment_name}"
 
     try:
         repo = org.create_repo(
             name=repo_name,
             private=False,
-            description=f"HEDA GitOps repo for {username}/{experiment_name}",
+            description=f"HEDA GitOps repo for {github_username}/{experiment_name}",
             auto_init=False,
             allow_squash_merge=True,
             allow_merge_commit=True,
@@ -124,77 +157,11 @@ def initialize_local_repo(repo_url: str, repo_name: str) -> None:
         pr_verify_path = tmp_dir / ".github/workflows/pr-verify.yml"
         pr_verify_path.parent.mkdir(parents=True, exist_ok=True)
 
-        pr_verify_path.write_text(
-            """\
-name: PR Verify
-
-on:
-  pull_request:
-    branches: [ main ]
-    
-jobs:
-  verify:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install HEDA
-        run: |
-          pip install --upgrade pip
-          pip install git+https://github.com/Zeta201/heda.git
-      - name: Finalize experiment
-        run: |
-          heda finalize
-      - name: Verify experiment
-        run: |
-          heda verify
-""" )
+        pr_verify_path.write_text(pr_verify_template)
         
         pr_finalize_path = tmp_dir / ".github/workflows/main-finalize.yml"
         pr_finalize_path.parent.mkdir(parents=True, exist_ok=True)
-        pr_finalize_path.write_text(
-            """\
-                            
-name: Main Finalize
-
-on:
-  push:
-    branches: [ main ]
-
-jobs:
-  finalize:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0   # Needed to push tags
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install HEDA
-        run: |
-          pip install --upgrade pip
-          pip install git+https://github.com/Zeta201/heda.git
-
-      - name: Finalize experiment
-        run: |
-          heda finalize
-
-      - name: Verify experiment
-        run: |
-          heda verify
-
-      - name: Upload verification artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: verification
-          path: verification.json
-"""
-        )
+        pr_finalize_path.write_text(pr_finalize_template)
 
         # -----------------------------
         # Initial policy commit
@@ -217,16 +184,18 @@ jobs:
 # -----------------------------
 
 @app.post("/init", response_model=InitResponse)
-def init_experiment(request: InitRequest, x_auth_token: str = Header(...)):
-    if x_auth_token != BACKEND_AUTH_TOKEN:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+def init_experiment(
+    request: InitRequest,
+    user: Dict = Depends(get_current_user)
+):
+    github_username = user["nickname"]
 
     repo_url = create_gitops_repo(
-        request.username,
+        github_username,
         request.experiment_name,
     )
 
-    repo_name = f"{request.username}-{request.experiment_name}"
+    repo_name = f"{github_username}-{request.experiment_name}"
     try:
         initialize_local_repo(repo_url, repo_name)
     except Exception as e:
@@ -246,15 +215,14 @@ def init_experiment(request: InitRequest, x_auth_token: str = Header(...)):
 
 @app.post("/publish", response_model=PublishResponse)
 async def publish_experiment_backend(
-    username: str = Form(...),
     experiment_name: str = Form(...),
     files: List[UploadFile] = File(...),
-    x_auth_token: str = Header(...),
+    user: Dict = Depends(get_current_user)
 ):
-    if x_auth_token != BACKEND_AUTH_TOKEN:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    repo_name = f"{username}-{experiment_name}"
+ 
+    github_username = user["nickname"]
+    
+    repo_name = f"{github_username}-{experiment_name}"
     repo_url = f"https://github.com/{GITHUB_ORG}/{repo_name}.git"
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="heda-publish-"))
@@ -296,14 +264,8 @@ async def publish_experiment_backend(
         repo = org.get_repo(repo_name)
 
         pr = repo.create_pull(
-            title=f"Propose experiment {proposal_hash}",
-            body=(
-                "### Experiment Proposal\n\n"
-                f"- Proposal hash: `{proposal_hash}`\n"
-                f"- Branch: `{branch_name}`\n\n"
-                "This PR triggers reproducibility verification.\n"
-                "If merged, the experiment will be versioned automatically."
-            ),
+            title=pr_title_template.format(proposal_hash=proposal_hash),
+            body=(pr_doc_template.format(proposal_hash=proposal_hash, branch_name=branch_name)),
             head=branch_name,
             base="main",
         )
@@ -316,3 +278,70 @@ async def publish_experiment_backend(
 
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+@app.post("/onboard")
+def onboard_user(user: Dict = Depends(get_current_user)):
+
+    github_username = user["nickname"]
+    
+    onboarding = load_onboarding()
+
+    # Idempotent behavior
+    if github_username in onboarding:
+        return {"message": "Onboarding already initiated"}
+    try:
+        user = gh.get_user(github_username)
+    except GithubException:
+        raise HTTPException(
+            status_code=400,
+            detail=f"GitHub user '{github_username}' does not exist"
+        )
+        
+    try:
+        org.invite_user(
+            user=user,
+            role="direct_member"
+        )
+    except GithubException as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to invite user: {e.data}"
+        )
+
+    onboarding[github_username] = {
+        "github_username": github_username,
+        "invited_at": datetime.utcnow().isoformat() + "Z",
+        "onboarded": False,
+    }
+    save_onboarding(onboarding)
+
+    return {"message": "Invitation sent"}
+
+@app.get("/onboard/status", response_model=OnboardStatusResponse)
+def onboarding_status(
+    user: Dict = Depends(get_current_user)
+):
+  
+    github_username = user["nickname"]
+
+    onboarding = load_onboarding()
+
+    if github_username not in onboarding:
+        return OnboardStatusResponse(onboarded=False, invitation=None)
+
+    record = onboarding[github_username]
+
+    # If already marked onboarded
+    if record["onboarded"]:
+        return OnboardStatusResponse(onboarded=True, invitation="")
+
+    # Check GitHub org membership
+    if is_org_member_by_username(record["github_username"]):
+        record["onboarded"] = True
+        record.update({
+            "onboarded": True,
+        })
+        save_onboarding(onboarding)
+        return OnboardStatusResponse(onboarded=True, invitation=InvitationStatus.accepted)
+
+    return OnboardStatusResponse(onboarded=False, invitation=InvitationStatus.pending)
