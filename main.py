@@ -1,16 +1,16 @@
 from datetime import datetime
 from typing import Dict, List
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 
-from .constants import InvitationStatus
+from app.constants import InvitationStatus
 
-from .onboarding import is_org_member_by_username, load_onboarding, save_onboarding
-from .publishing import publish_experiment_backend
+from app.onboarding import is_org_member_by_username, load_onboarding, save_onboarding
+from app.publishing import publish_experiment_backend
 
-from .auth import get_current_user
-from .github_utils import create_gitops_repo, initialize_local_repo
-from .models import InitRequest, InitResponse, OnboardStatusResponse, PublishResponse
-from .config import gh, org
+from app.auth import check_github_org_membership, get_current_user
+from app.github_utils import create_gitops_repo, initialize_local_repo
+from app.models import InitRequest, InitResponse, OnboardStatusResponse, PublishResponse
+from app.config import gh, org
 from github import GithubException
 
 app = FastAPI(title="HEDA GitOps Backend")
@@ -21,6 +21,8 @@ def init_experiment(
     user: Dict = Depends(get_current_user)
 ):
     github_username = user["nickname"]
+
+    # check_github_org_membership(github_username)
 
     repo_url = create_gitops_repo(
         github_username,
@@ -51,7 +53,11 @@ async def publish_experiment(
     user: dict = Depends(get_current_user)
 ):
     github_username = user["nickname"]
-    return await publish_experiment_backend(experiment_name, files, github_username)
+    user_id = user["user_id"]
+    
+    # check_github_org_membership(github_username)
+
+    return await publish_experiment_backend(experiment_name, files, github_username, user_id)
 
 
 @app.post("/onboard")
@@ -103,15 +109,11 @@ def onboarding_status(
     onboarding = load_onboarding()
 
     if github_username not in onboarding:
-        return OnboardStatusResponse(onboarded=False, invitation=None)
+        return OnboardStatusResponse(onboarded=False, invitation="")
 
     record = onboarding[github_username]
 
-    # If already marked onboarded
-    if record["onboarded"]:
-        return OnboardStatusResponse(onboarded=True, invitation="")
-
-    # Check GitHub org membership
+      # Check GitHub org membership
     if is_org_member_by_username(record["github_username"]):
         record["onboarded"] = True
         record.update({
@@ -120,4 +122,10 @@ def onboarding_status(
         save_onboarding(onboarding)
         return OnboardStatusResponse(onboarded=True, invitation=InvitationStatus.accepted)
 
+    record["onboarded"] = False
+    record.update({
+        "onboarded": False,
+    })
+    save_onboarding(onboarding)
+        
     return OnboardStatusResponse(onboarded=False, invitation=InvitationStatus.pending)

@@ -1,4 +1,6 @@
+from datetime import time
 import os
+from pathlib import Path
 from typing import Dict
 from fastapi import HTTPException, Header
 from jose import jwt
@@ -8,8 +10,19 @@ import requests
 from dotenv import load_dotenv
 from typing import Tuple
 
+import os
+import requests
+from fastapi import HTTPException
+
+from app.config import GITHUB_APP_ID, GITHUB_PRIVATE_KEY_PATH
+
 load_dotenv()
 
+
+GITHUB_ORG = os.environ.get("GITHUB_ORG")  # e.g., "heda-org"
+GITHUB_TOKEN = os.environ.get("GITHUB_ADMIN_TOKEN")  # a PAT with org membership read/write access
+CLIENT_ID = os.environ.get("CLIENT_ID")  
+CLIENT_SECRET = os.environ.get("CLIENT_SECRET")  
 
 # Auth0 configuration
 AUTH0_DOMAIN = os.environ.get("AUTH0_DOMAIN")  # e.g., dev-xxxx.us.auth0.com
@@ -76,7 +89,11 @@ def get_current_user(authorization: str = Header(...)) -> Dict:
     if not payload.get("sub"):
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    return get_userinfo(token)
+    user = get_userinfo(token)
+    user.update({
+        "user_id": payload.get("sub")
+    })
+    return user
 
 
 def extract_user_id(
@@ -126,3 +143,78 @@ def get_userinfo(token: str) -> Dict:
     )
     r.raise_for_status()
     return r.json()
+
+
+def check_github_org_membership(github_username: str) -> None:
+    """
+    Ensure that the given GitHub username is a member of the organization.
+    Raises HTTPException(403) if not authorized.
+    """
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json",
+    }
+    url = f"https://api.github.com/orgs/{GITHUB_ORG}/members/{github_username}"
+    resp = requests.get(url, headers=headers, timeout=5)
+
+    if resp.status_code == 404:
+        raise HTTPException(
+            status_code=403,
+            detail=f"User '{github_username}' is not a member of '{GITHUB_ORG}'",
+        )
+    elif resp.status_code != 204:
+        # 204 means user is a member
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to verify org membership: {resp.status_code} {resp.text}"
+        )
+
+
+def get_management_api_token() -> str:
+    resp = requests.post(
+        f"https://{AUTH0_DOMAIN}/oauth/token",
+        json={
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+            "audience": f"https://{AUTH0_DOMAIN}/api/v2/",
+            "grant_type": "client_credentials",
+        },
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()["access_token"]
+
+
+def get_github_token_for_user(user_id: str) -> str:
+    mgmt_token = get_management_api_token()
+
+    resp = requests.get(
+        f"https://{AUTH0_DOMAIN}/api/v2/users/{user_id}",
+        headers={
+            "Authorization": f"Bearer {mgmt_token}"
+        },
+        timeout=10,
+    )
+    resp.raise_for_status()
+    user = resp.json()
+    print(f"This is payload {user}")
+    for identity in user.get("identities", []):
+        if identity.get("provider") == "github":
+            github_token = identity.get("access_token")
+            if not github_token:
+                raise RuntimeError("GitHub token not found in identity")
+            return github_token
+
+    raise RuntimeError("No GitHub identity found for user")
+
+
+def create_app_jwt() -> str:
+    private_key = Path(GITHUB_PRIVATE_KEY_PATH).read_text()
+
+    payload = {
+        "iat": int(time.time()) - 60,
+        "exp": int(time.time()) + 600,
+        "iss": GITHUB_APP_ID,
+    }
+
+    return jwt.encode(payload, private_key, algorithm="RS256")

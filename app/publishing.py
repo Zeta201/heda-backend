@@ -2,30 +2,27 @@ from datetime import datetime
 from pathlib import Path
 import shutil
 import tempfile
-from typing import Dict, List
-from fastapi import Depends, File, Form, UploadFile
+from typing import List
+from fastapi import UploadFile
 
 from .models import PublishResponse
 
 from .utils import compute_experiment_hash, run_git
 
-from .config import GITHUB_ORG, org
-from .auth import get_current_user
+from .config import GITHUB_ORG, get_github_client_for_user, get_user_org
 
-from templates.pr_template import pr_title_template, pr_doc_template
+from .templates.pr_template import pr_title_template, pr_doc_template
 
 
 async def publish_experiment_backend(
-    experiment_name: str = Form(...),
-    files: List[UploadFile] = File(...),
-    user: Dict = Depends(get_current_user)
+    experiment_name: str,
+    files: List[UploadFile],
+    github_username: str,
+    user_id: str
 ):
  
-    github_username = user["nickname"]
-    
     repo_name = f"{github_username}-{experiment_name}"
     repo_url = f"https://github.com/{GITHUB_ORG}/{repo_name}.git"
-
     tmp_dir = Path(tempfile.mkdtemp(prefix="heda-publish-"))
 
     try:
@@ -60,10 +57,13 @@ async def publish_experiment_backend(
 
         # 6. Push branch
         run_git(["git", "push", "-u", "origin", branch_name], cwd=tmp_dir)
-
-        # 7. Open PR
+        
+        gh = get_github_client_for_user(user_id)
+        
+        org = gh.get_organization(GITHUB_ORG)
+        
         repo = org.get_repo(repo_name)
-
+        print(f"This is repo ", repo)
         pr = repo.create_pull(
             title=pr_title_template.format(proposal_hash=proposal_hash),
             body=(pr_doc_template.format(proposal_hash=proposal_hash, branch_name=branch_name)),
