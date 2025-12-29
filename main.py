@@ -20,41 +20,9 @@ import requests
 from utils import compute_experiment_hash, run_git
 load_dotenv()
 
-# -----------------------------
-# CONFIGURATION
-# -----------------------------
 
-GITHUB_ORG = os.environ.get("GITHUB_ORG") 
-ADMIN_GITHUB_TOKEN = os.environ.get("GITHUB_ADMIN_TOKEN")  # Admin token
 
-if not ADMIN_GITHUB_TOKEN:
-    raise RuntimeError("Missing environment variables: GITHUB_ADMIN_TOKEN")
 
-gh = Github(ADMIN_GITHUB_TOKEN)
-org = gh.get_organization(GITHUB_ORG)
-
-# -----------------------------
-# Pydantic models
-# -----------------------------
-
-class InitRequest(BaseModel):
-    experiment_name: str
-
-class InitResponse(BaseModel):
-    repo_url: str
-    message: str
-
-class PublishResponse(BaseModel):
-    experiment_id: str
-    pr_url: str
-    message: str
-
-class OnboardRequest(BaseModel):
-    github_username: str
-    
-class OnboardStatusResponse(BaseModel):
-    onboarded: bool
-    invitation: str
 
 
 app = FastAPI(title="HEDA GitOps Backend")
