@@ -3,6 +3,10 @@ from pathlib import Path
 import subprocess
 from typing import List
 
+import hmac
+
+from app.config import GITHUB_WEBHOOK_SECRET
+
 
 def compute_experiment_hash(files: List[Path]) -> str:
     """
@@ -18,3 +22,21 @@ def compute_experiment_hash(files: List[Path]) -> str:
 def run_git(cmd: List[str], cwd: Path):
     subprocess.run(cmd, cwd=cwd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
+
+def verify_signature(payload: bytes, signature: str):
+    if not signature:
+        raise ValueError("Missing signature")
+
+    sha_name, signature = signature.split("=")
+
+    if sha_name != "sha256":
+        raise ValueError("Unsupported signature type")
+
+    mac = hmac.new(
+        GITHUB_WEBHOOK_SECRET.encode(),
+        msg=payload,
+        digestmod=hashlib.sha256,
+    )
+
+    if not hmac.compare_digest(mac.hexdigest(), signature):
+        raise ValueError("Invalid signature")

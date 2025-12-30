@@ -4,3 +4,4 @@ __pycache__/
 .env
 secrets/
 *.txt
+private_key.pem

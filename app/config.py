@@ -6,15 +6,13 @@ from github.Auth import AppAuth
 
 load_dotenv()
 
-# -----------------------------
-# CONFIGURATION
-# -----------------------------
 
 GITHUB_ORG = os.environ.get("GITHUB_ORG") 
-ADMIN_GITHUB_TOKEN = os.environ.get("GITHUB_ADMIN_TOKEN")  # Admin token
-GITHUB_APP_ID = "2559490"
-INSTALLATION_ID = "101753401"
-GITHUB_PRIVATE_KEY_PATH = "secrets/heda-automerge-bot-private-key.pem"
+ADMIN_GITHUB_TOKEN = os.environ.get("GITHUB_ADMIN_TOKEN")  
+GITHUB_APP_ID = os.getenv("GITHUB_APP_ID")  
+GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
+GITHUB_PRIVATE_KEY_PATH = os.getenv("GITHUB_PRIVATE_KEY_PATH")
+
 
 if not ADMIN_GITHUB_TOKEN:
     raise RuntimeError("Missing environment variables: GITHUB_ADMIN_TOKEN")
@@ -32,5 +30,6 @@ def get_user_org(user_token: str):
 
 def get_github_client_for_user(user_id: str) -> Github:
     github_token = get_github_token_for_user(user_id)
-    print(f"This is github token", github_token)
     return Github(github_token)
+
+

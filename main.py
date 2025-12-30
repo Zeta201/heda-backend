@@ -1,9 +1,10 @@
 from datetime import datetime
 from typing import Dict, List
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Header, Request, UploadFile
 
 from app.constants import InvitationStatus
 
+from app.merge import try_merge_pr
 from app.onboarding import is_org_member_by_username, load_onboarding, save_onboarding
 from app.publishing import publish_experiment_backend
 
@@ -11,6 +12,7 @@ from app.auth import check_github_org_membership, get_current_user
 from app.github_utils import create_gitops_repo, initialize_local_repo
 from app.models import InitRequest, InitResponse, OnboardStatusResponse, PublishResponse
 from app.config import gh, org
+from app.utils import verify_signature
 from github import GithubException
 
 app = FastAPI(title="HEDA GitOps Backend")
@@ -129,3 +131,24 @@ def onboarding_status(
     save_onboarding(onboarding)
         
     return OnboardStatusResponse(onboarded=False, invitation=InvitationStatus.pending)
+
+@app.post("/github/webhook")
+async def github_webhook(
+    request: Request,
+    x_hub_signature_256: str = Header(None),
+    x_github_event: str = Header(None),
+):
+    payload = await request.body()
+    verify_signature(payload, x_hub_signature_256)
+
+    data = await request.json()
+
+    if (
+    x_github_event == "check_run"
+    and data["action"] == "completed"
+    and data["check_run"]["name"] == "verify"
+    and data["check_run"]["conclusion"] == "success"):
+        await try_merge_pr(data)
+
+
+    return {"status": "ok"}

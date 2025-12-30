@@ -14,7 +14,6 @@ import os
 import requests
 from fastapi import HTTPException
 
-from app.config import GITHUB_APP_ID, GITHUB_PRIVATE_KEY_PATH
 
 load_dotenv()
 
@@ -197,7 +196,6 @@ def get_github_token_for_user(user_id: str) -> str:
     )
     resp.raise_for_status()
     user = resp.json()
-    print(f"This is payload {user}")
     for identity in user.get("identities", []):
         if identity.get("provider") == "github":
             github_token = identity.get("access_token")
@@ -208,13 +206,3 @@ def get_github_token_for_user(user_id: str) -> str:
     raise RuntimeError("No GitHub identity found for user")
 
 
-def create_app_jwt() -> str:
-    private_key = Path(GITHUB_PRIVATE_KEY_PATH).read_text()
-
-    payload = {
-        "iat": int(time.time()) - 60,
-        "exp": int(time.time()) + 600,
-        "iss": GITHUB_APP_ID,
-    }
-
-    return jwt.encode(payload, private_key, algorithm="RS256")

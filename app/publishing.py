@@ -63,7 +63,6 @@ async def publish_experiment_backend(
         org = gh.get_organization(GITHUB_ORG)
         
         repo = org.get_repo(repo_name)
-        print(f"This is repo ", repo)
         pr = repo.create_pull(
             title=pr_title_template.format(proposal_hash=proposal_hash),
             body=(pr_doc_template.format(proposal_hash=proposal_hash, branch_name=branch_name)),
